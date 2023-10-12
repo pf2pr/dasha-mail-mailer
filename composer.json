@@ -1,0 +1,29 @@
+{
+  "type": "library",
+  "name": "pf2pr/dasha-mail-mailer",
+  "description": "Symfony DashaMail Mailer Bridge",
+  "keywords": ["mailer", "dasha mail"],
+  "license": "MIT",
+  "authors": [
+    {
+      "name": "pf2pr",
+      "email": "pf2prr@gmail.com"
+    }
+  ],
+  "require": {
+    "php": ">=8.1",
+    "symfony/mailer": "^6.3"
+  },
+  "require-dev": {
+    "symfony/http-client": "^6.3",
+    "symfony/webhook": "^6.3",
+    "symfony/remote-event": "^6.3",
+    "phpstan/phpstan": "^1.10"
+  },
+  "autoload": {
+    "psr-4": {
+      "Pf2Pr\\DashaMailMailer\\": ""
+    }
+  },
+  "minimum-stability": "stable"
+}
