@@ -1,0 +1,16 @@
+{
+  "event": "dropped",
+  "recipient": "to_dropped@example.com",
+  "email": "to_dropped@example.com",
+  "message_id": "5a54eb2ca111d8e6de55ac4ef641f484",
+  "code": "666",
+  "description": "пользователь уже отписан",
+  "error": "пользователь уже отписан",
+  "bounce_category": "hrd",
+  "user_id": "188489",
+  "campaign_id": "0",
+  "member_id": "0",
+  "custom_vars": "",
+  "event_time": "2023-01-01 06:04:00",
+  "secret": "a085d09c0504dfb35e021bedbbf8abd7"
+}

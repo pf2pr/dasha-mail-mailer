@@ -18,11 +18,16 @@
     "symfony/http-client": "^6.3",
     "symfony/webhook": "^6.3",
     "symfony/remote-event": "^6.3",
-    "phpstan/phpstan": "^1.10"
+    "phpunit/phpunit": "^10.4"
   },
   "autoload": {
     "psr-4": {
-      "Pf2Pr\\DashaMailMailer\\": ""
+      "Pf2Pr\\DashaMailMailer\\": "src/"
+    }
+  },
+  "autoload-dev": {
+    "psr-4": {
+      "Pf2Pr\\DashaMailMailer\\Tests\\": "Tests/"
     }
   },
   "minimum-stability": "stable"

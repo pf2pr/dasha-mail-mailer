@@ -18,12 +18,13 @@ final class DashaMailSmtpTransport extends EsmtpTransport
     public function __construct(
         string $username,
         #[SensitiveParameter] string $password,
+        bool $isTls = false,
         private readonly bool $noTrackOpens = false,
         private readonly bool $noTrackClicks = false,
         EventDispatcherInterface $dispatcher = null,
         LoggerInterface $logger = null
     ) {
-        parent::__construct('smtps.dashasender.ru', 465, true, $dispatcher, $logger);
+        parent::__construct('smtps.dashasender.ru', $isTls ? 465 : 2525, $isTls, $dispatcher, $logger);
 
         $this->setUsername($username);
         $this->setPassword($password);

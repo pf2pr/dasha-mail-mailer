@@ -1,0 +1,16 @@
+{
+  "event": "unsubscribed",
+  "recipient": "to_unsubscribed@example.com",
+  "email": "to_unsubscribed@example.com",
+  "message_id": "a1e1c93a7e29cdee08a589f02c095542",
+  "code": "",
+  "description": "",
+  "error": "",
+  "bounce_category": "",
+  "user_id": "188489",
+  "campaign_id": "0",
+  "member_id": "0",
+  "custom_vars": "",
+  "event_time": "2023-01-01 15:14:00",
+  "secret": "5bbc81c7b35feb4136425f25fdb55a8f"
+}

@@ -28,9 +28,20 @@ final class DashaMailTransportFactory extends AbstractTransportFactory
                 ->setHost('default' === $dsn->getHost() ? null : $dsn->getHost())
                 ->setPort($dsn->getPort()),
 
-            'dashamail', 'dashamail+smtp' => new DashaMailSmtpTransport(
+            'dashamail', 'dashamail+smtps' => new DashaMailSmtpTransport(
                 $this->getUser($dsn),
                 $this->getPassword($dsn),
+                true,
+                $noTrackOpens,
+                $noTrackClicks,
+                $this->dispatcher,
+                $this->logger
+            ),
+
+            'dashamail+smtp' => new DashaMailSmtpTransport(
+                $this->getUser($dsn),
+                $this->getPassword($dsn),
+                false,
                 $noTrackOpens,
                 $noTrackClicks,
                 $this->dispatcher,
@@ -46,6 +57,6 @@ final class DashaMailTransportFactory extends AbstractTransportFactory
      */
     protected function getSupportedSchemes(): array
     {
-        return ['dashamail', 'dashamail+smtp', 'dashamail+api'];
+        return ['dashamail', 'dashamail+api', 'dashamail+smtp', 'dashamail+smtps'];
     }
 }

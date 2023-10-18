@@ -1,0 +1,16 @@
+{
+  "event": "delivered",
+  "recipient": "to_delivered@example.com",
+  "email": "to_delivered@example.com",
+  "message_id": "c5e1218affbba34a773e6c448631c892",
+  "code": "",
+  "description": "",
+  "error": "",
+  "bounce_category": "",
+  "user_id": "188489",
+  "campaign_id": "0",
+  "member_id": "0",
+  "custom_vars": "",
+  "event_time": "2023-01-01 01:42:02",
+  "secret": "f1d5651569d61f935647891cb6311cab"
+}
