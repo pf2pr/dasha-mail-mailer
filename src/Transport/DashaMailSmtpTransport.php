@@ -6,7 +6,6 @@ namespace Pf2Pr\DashaMailMailer\Transport;
 
 use Psr\EventDispatcher\EventDispatcherInterface;
 use Psr\Log\LoggerInterface;
-use SensitiveParameter;
 use Symfony\Component\Mailer\Envelope;
 use Symfony\Component\Mailer\SentMessage;
 use Symfony\Component\Mailer\Transport\Smtp\EsmtpTransport;
@@ -17,7 +16,7 @@ final class DashaMailSmtpTransport extends EsmtpTransport
 {
     public function __construct(
         string $username,
-        #[SensitiveParameter] string $password,
+        #[\SensitiveParameter] string $password,
         bool $isTls = false,
         private readonly bool $noTrackOpens = false,
         private readonly bool $noTrackClicks = false,

@@ -6,7 +6,6 @@ namespace Pf2Pr\DashaMailMailer\Transport;
 
 use Psr\EventDispatcher\EventDispatcherInterface;
 use Psr\Log\LoggerInterface;
-use SensitiveParameter;
 use Symfony\Component\Mailer\Envelope;
 use Symfony\Component\Mailer\Exception\HttpTransportException;
 use Symfony\Component\Mailer\Header\MetadataHeader;
@@ -87,7 +86,7 @@ final class DashaMailApiTransport extends AbstractApiTransport
     ];
 
     public function __construct(
-        #[SensitiveParameter] private readonly string $key,
+        #[\SensitiveParameter] private readonly string $key,
         private readonly bool $noTrackOpens = false,
         private readonly bool $noTrackClicks = false,
         HttpClientInterface $client = null,
@@ -197,7 +196,7 @@ final class DashaMailApiTransport extends AbstractApiTransport
         }
 
         if ($headers = $this->prepareHeaders($email->getHeaders())) {
-            $payload = array_merge($payload, $headers);
+            $payload['headers'] = json_encode($headers);
         }
 
         return $payload;
@@ -234,7 +233,7 @@ final class DashaMailApiTransport extends AbstractApiTransport
      */
     private function prepareHeaders(Headers $headers): array
     {
-        $headersAndTags  = [];
+        $result  = [];
         $headersToBypass = [
             'from',
             'sender',
@@ -251,20 +250,20 @@ final class DashaMailApiTransport extends AbstractApiTransport
                 continue;
             }
             if ($header instanceof TagHeader) {
-                $headersAndTags['headers']['X-Tag'][] = $header->getValue();
+                $result['X-Tag'][] = $header->getValue();
 
                 continue;
             }
             if ($header instanceof MetadataHeader) {
-                $headersAndTags['headers']['X-Metadata-' . $header->getKey()] = $header->getValue();
+                $result['X-Metadata-' . $header->getKey()] = $header->getValue();
 
                 continue;
             }
 
-            $headersAndTags['headers'][$header->getName()] = $header->getBodyAsString();
+            $result[$header->getName()] = $header->getBodyAsString();
         }
 
-        return $headersAndTags;
+        return $result;
     }
 
     /**
