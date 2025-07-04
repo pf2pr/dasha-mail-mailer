@@ -1,16 +1,13 @@
-DashaMail Bridge
-=================
+# DashaMail Bridge
 
 Provides DashaMail integration for Symfony Mailer.
 
-Installation
----------
+## Installation
 ```sh
 composer require pf2pr/dasha-mail-mailer
 ```
 
-Configuration example
----------
+## Configuration
 
 ```env
 # SMTP
@@ -26,7 +23,18 @@ where:
 - `no_track_clicks` disabling tracking (substitution) of links. Default is `false`
 
 
-Resources
----------
+### Configure headers
+
+```yaml
+# config/packages/mailer.yaml
+framework:
+  mailer:
+    dsn: '%env(MAILER_DSN)%'
+    headers:
+      X-Dashamail-Unsub-Ignore: '1'
+```
+
+## Resources
+
 
 * [DashaMail doc](https://docs.dashamail.ru/)
