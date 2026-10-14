@@ -7,6 +7,11 @@ Provides DashaMail integration for Symfony Mailer.
 composer require pf2pr/dasha-mail-mailer
 ```
 
+Supported versions:
+
+- PHP 8.1 or later;
+- Symfony Mailer 6.4, 7.4 or 8.1.
+
 ## Configuration
 
 ```env

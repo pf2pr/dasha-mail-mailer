@@ -7,22 +7,58 @@ namespace Pf2Pr\DashaMailMailer\Tests\Transport;
 use Pf2Pr\DashaMailMailer\Transport\DashaMailApiTransport;
 use Pf2Pr\DashaMailMailer\Transport\DashaMailSmtpTransport;
 use Pf2Pr\DashaMailMailer\Transport\DashaMailTransportFactory;
+use PHPUnit\Framework\Attributes\DataProvider;
+use PHPUnit\Framework\TestCase;
 use Psr\Log\NullLogger;
 use Symfony\Component\HttpClient\MockHttpClient;
-use Symfony\Component\Mailer\Test\TransportFactoryTestCase;
+use Symfony\Component\Mailer\Exception\IncompleteDsnException;
+use Symfony\Component\Mailer\Exception\UnsupportedSchemeException;
 use Symfony\Component\Mailer\Transport\Dsn;
 use Symfony\Component\Mailer\Transport\TransportFactoryInterface;
+use Symfony\Component\Mailer\Transport\TransportInterface;
 
 /**
  * @internal
  *
  * @coversNothing
  */
-final class DashaMailTransportFactoryTest extends TransportFactoryTestCase
+final class DashaMailTransportFactoryTest extends TestCase
 {
+    private const USER     = 'u$er';
+    private const PASSWORD = 'pa$s';
+
     public function getFactory(): TransportFactoryInterface
     {
         return new DashaMailTransportFactory(null, new MockHttpClient(), new NullLogger());
+    }
+
+    #[DataProvider('supportsProvider')]
+    public function testSupports(Dsn $dsn, bool $supports): void
+    {
+        self::assertSame($supports, $this->getFactory()->supports($dsn));
+    }
+
+    #[DataProvider('createProvider')]
+    public function testCreate(Dsn $dsn, TransportInterface $expected): void
+    {
+        self::assertEquals($expected, $this->getFactory()->create($dsn));
+    }
+
+    #[DataProvider('unsupportedSchemeProvider')]
+    public function testUnsupportedScheme(Dsn $dsn, string $message): void
+    {
+        $this->expectException(UnsupportedSchemeException::class);
+        $this->expectExceptionMessage($message);
+
+        $this->getFactory()->create($dsn);
+    }
+
+    #[DataProvider('incompleteDsnProvider')]
+    public function testIncompleteDsn(Dsn $dsn): void
+    {
+        $this->expectException(IncompleteDsnException::class);
+
+        $this->getFactory()->create($dsn);
     }
 
     /**
