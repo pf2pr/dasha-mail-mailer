@@ -12,7 +12,7 @@ Supported versions:
 - PHP 8.1 or later;
 - Symfony Mailer 6.4, 7.4 or 8.1.
 
-Register the bundle in Symfony applications:
+Symfony Flex registers `DashaMailMailerBundle` automatically. Without Flex, register it manually:
 
 ```php
 // config/bundles.php
