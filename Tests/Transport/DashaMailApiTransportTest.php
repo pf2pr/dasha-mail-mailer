@@ -62,6 +62,7 @@ final class DashaMailApiTransportTest extends TestCase
 
         $email    = new Email();
         $envelope = new Envelope(new Address('from@example.com'), [new Address('to@example.com')]);
+        $email->replyTo(new Address('reply@example.com'));
         $email->getHeaders()->addTextHeader('X-Dashamail-Unsub-Ignore', '1');
         $email->getHeaders()->addTextHeader('X-Dashamail-Variables', $json);
         $email->getHeaders()->addTextHeader('text-header', 'text-value');
@@ -79,6 +80,9 @@ final class DashaMailApiTransportTest extends TestCase
 
         self::assertArrayHasKey('X-Dashamail-Variables', $headers);
         self::assertSame($json, $headers['X-Dashamail-Variables']);
+
+        self::assertArrayHasKey('Reply-To', $headers);
+        self::assertSame('reply@example.com', $headers['Reply-To']);
 
         self::assertArrayHasKey('text-header', $headers);
         self::assertSame('text-value', $headers['text-header']);
