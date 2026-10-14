@@ -4,6 +4,7 @@ Provides DashaMail integration for Symfony Mailer.
 
 ## Installation
 ```sh
+composer config extra.symfony.allow-contrib true
 composer require pf2pr/dasha-mail-mailer
 ```
 
@@ -12,7 +13,7 @@ Supported versions:
 - PHP 8.1 or later;
 - Symfony Mailer 6.4, 7.4 or 8.1.
 
-Symfony Flex registers `DashaMailMailerBundle` automatically. Without Flex, register it manually:
+The contributed Symfony Flex recipe registers `DashaMailMailerBundle` automatically. Without the recipe, register it manually:
 
 ```php
 // config/bundles.php
