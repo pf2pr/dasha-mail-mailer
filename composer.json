@@ -15,10 +15,14 @@
     "symfony/mailer": "^6.4 || ^7.4 || ^8.1"
   },
   "require-dev": {
+    "symfony/framework-bundle": "^6.4 || ^7.4 || ^8.1",
     "symfony/http-client": "^6.4 || ^7.4 || ^8.1",
     "symfony/webhook": "^6.4 || ^7.4 || ^8.1",
     "symfony/remote-event": "^6.4 || ^7.4 || ^8.1",
     "phpunit/phpunit": "^10.5"
+  },
+  "suggest": {
+    "symfony/framework-bundle": "Enables automatic transport registration through DashaMailMailerBundle"
   },
   "autoload": {
     "psr-4": {

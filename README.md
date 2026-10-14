@@ -12,6 +12,16 @@ Supported versions:
 - PHP 8.1 or later;
 - Symfony Mailer 6.4, 7.4 or 8.1.
 
+Register the bundle in Symfony applications:
+
+```php
+// config/bundles.php
+return [
+    // ...
+    Pf2Pr\DashaMailMailer\DashaMailMailerBundle::class => ['all' => true],
+];
+```
+
 ## Configuration
 
 ```env
