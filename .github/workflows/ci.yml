@@ -65,6 +65,7 @@ jobs:
         run: |
           composer require --no-update --no-interaction "symfony/mailer:${{ matrix.symfony }}"
           composer require --dev --no-update --no-interaction \
+            "symfony/framework-bundle:${{ matrix.symfony }}" \
             "symfony/http-client:${{ matrix.symfony }}" \
             "symfony/webhook:${{ matrix.symfony }}" \
             "symfony/remote-event:${{ matrix.symfony }}"
