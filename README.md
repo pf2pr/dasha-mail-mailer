@@ -22,6 +22,12 @@ return [
 ];
 ```
 
+The API transport additionally requires Symfony HttpClient:
+
+```sh
+composer require symfony/http-client
+```
+
 ## Configuration
 
 ```env
@@ -36,6 +42,8 @@ where:
 - `KEY` is your DashaMail API Key
 - `no_track_opens` disabling tracking opens. Default is `false`
 - `no_track_clicks` disabling tracking (substitution) of links. Default is `false`
+
+The API transport uses DashaMail REST API v2.
 
 
 ### Configure headers
@@ -60,5 +68,5 @@ composer require symfony/webhook symfony/remote-event
 
 ## Resources
 
-
-* [DashaMail doc](https://docs.dashamail.ru/)
+- [DashaMail REST API v2](https://dashamail.ru/api/)
+- [DashaMail SMTP](https://dashamail.ru/smtp/)

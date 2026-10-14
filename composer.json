@@ -22,7 +22,8 @@
     "phpunit/phpunit": "^10.5"
   },
   "suggest": {
-    "symfony/framework-bundle": "Enables automatic transport registration through DashaMailMailerBundle"
+    "symfony/framework-bundle": "Enables automatic transport registration through DashaMailMailerBundle",
+    "symfony/http-client": "Required to use the DashaMail API transport"
   },
   "autoload": {
     "psr-4": {
