@@ -22,6 +22,12 @@ return [
 ];
 ```
 
+The API transport additionally requires Symfony HttpClient:
+
+```sh
+composer require symfony/http-client
+```
+
 ## Configuration
 
 ```env
