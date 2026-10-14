@@ -97,6 +97,32 @@ final class DashaMailApiTransportTest extends TestCase
         self::assertSame('<id1@value> <id2@value>', $headers['id-array-header']);
     }
 
+    public function testDashaMailHeadersBecomeApiOptions(): void
+    {
+        $email = new Email();
+        $email->getHeaders()->addTextHeader('DM-Message-ID', 'order-123');
+        $email->getHeaders()->addTextHeader('DM-Campaign-ID', 'order-paid');
+        $email->getHeaders()->addTextHeader('DM-Delivery-Timestamp', '1790000000');
+        $email->getHeaders()->addTextHeader('DM-Domain', 'example.com');
+        $email->getHeaders()->addTextHeader('DM-Ignore-Delivery-Policy', '1');
+        $email->getHeaders()->addTextHeader('DM-No-Track-Opens', '1');
+        $email->getHeaders()->addTextHeader('DM-No-Track-Clicks', '1');
+        $envelope = new Envelope(new Address('from@example.com'), [new Address('to@example.com')]);
+
+        $transport = new DashaMailApiTransport('ACCESS_KEY');
+        $method    = new ReflectionMethod(DashaMailApiTransport::class, 'getPayload');
+        $payload   = $method->invoke($transport, $email, $envelope);
+
+        self::assertSame('order-123', $payload['message_id']);
+        self::assertSame('order-paid', $payload['campaign_id']);
+        self::assertSame('1790000000', $payload['delivery_time']);
+        self::assertSame('example.com', $payload['domain']);
+        self::assertTrue($payload['ignore_delivery_policy']);
+        self::assertTrue($payload['no_track_opens']);
+        self::assertTrue($payload['no_track_clicks']);
+        self::assertArrayNotHasKey('headers', $payload);
+    }
+
     public function testNoTrackOpensTrue(): void
     {
         $email    = new Email();

@@ -45,6 +45,26 @@ where:
 
 The API transport uses DashaMail REST API v2.
 
+### Per-message options
+
+The same DashaMail headers work with API and SMTP transports:
+
+| Header | Purpose |
+| --- | --- |
+| `DM-Message-ID` | Correlate a message with delivery events |
+| `DM-Campaign-ID` | Group messages in statistics |
+| `DM-Delivery-Timestamp` | Schedule delivery using a Unix timestamp |
+| `DM-Domain` | Select the sending domain |
+| `DM-Ignore-Delivery-Policy` | Ignore the account delivery policy |
+| `DM-No-Track-Opens` | Disable open tracking |
+| `DM-No-Track-Clicks` | Disable click tracking |
+
+```php
+$email->getHeaders()->addTextHeader('DM-Message-ID', 'order-123');
+$email->getHeaders()->addTextHeader('DM-Campaign-ID', 'order-paid');
+$email->getHeaders()->addTextHeader('DM-Delivery-Timestamp', '1790000000');
+```
+
 
 ### Configure headers
 
