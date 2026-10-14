@@ -243,7 +243,6 @@ final class DashaMailApiTransport extends AbstractApiTransport
             'cc',
             'bcc',
             'subject',
-            'reply-to',
             'content-type',
             'accept',
         ];
