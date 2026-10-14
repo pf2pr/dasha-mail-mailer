@@ -13,7 +13,7 @@ Supported versions:
 - PHP 8.1 or later;
 - Symfony Mailer 6.4, 7.4 or 8.1.
 
-The contributed Symfony Flex recipe registers `DashaMailMailerBundle` automatically. Without the recipe, register it manually:
+This package is a Symfony Mailer bridge. In full Symfony applications, the contributed Flex recipe registers the optional `DashaMailMailerBundle` DI adapter. Without the recipe, register the adapter manually:
 
 ```php
 // config/bundles.php

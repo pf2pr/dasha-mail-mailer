@@ -1,5 +1,5 @@
 {
-  "type": "symfony-bundle",
+  "type": "symfony-mailer-bridge",
   "name": "pf2pr/dasha-mail-mailer",
   "description": "Symfony DashaMail Mailer Bridge",
   "keywords": ["mailer", "dasha mail"],
