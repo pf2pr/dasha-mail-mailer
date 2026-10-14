@@ -26,6 +26,19 @@ use function in_array;
  */
 final class DashaMailApiTransport extends AbstractApiTransport
 {
+    private const API_OPTION_HEADERS = [
+        'dm-message-id'         => 'message_id',
+        'dm-campaign-id'        => 'campaign_id',
+        'dm-delivery-timestamp' => 'delivery_time',
+        'dm-domain'             => 'domain',
+    ];
+
+    private const API_FLAG_HEADERS = [
+        'dm-ignore-delivery-policy' => 'ignore_delivery_policy',
+        'dm-no-track-opens'         => 'no_track_opens',
+        'dm-no-track-clicks'        => 'no_track_clicks',
+    ];
+
 
     public function __construct(
         #[\SensitiveParameter] private readonly string $key,
@@ -98,6 +111,8 @@ final class DashaMailApiTransport extends AbstractApiTransport
             'subject'         => $email->getSubject(),
         ];
 
+        $payload = array_replace($payload, $this->prepareDashaMailOptions($email->getHeaders()));
+
         if ('' !== $envelope->getSender()->getName()) {
             $payload['from_name'] = $envelope->getSender()->getName();
         }
@@ -163,11 +178,32 @@ final class DashaMailApiTransport extends AbstractApiTransport
     }
 
     /**
+     * @return array<string, bool|string>
+     */
+    private function prepareDashaMailOptions(Headers $headers): array
+    {
+        $options = [];
+        foreach (self::API_OPTION_HEADERS as $headerName => $parameterName) {
+            if (null !== $header = $headers->get($headerName)) {
+                $options[$parameterName] = $header->getBodyAsString();
+            }
+        }
+
+        foreach (self::API_FLAG_HEADERS as $headerName => $parameterName) {
+            if (null !== $headers->get($headerName)) {
+                $options[$parameterName] = true;
+            }
+        }
+
+        return $options;
+    }
+
+    /**
      * @return array<string, mixed>
      */
     private function prepareHeaders(Headers $headers): array
     {
-        $result  = [];
+        $result          = [];
         $headersToBypass = [
             'from',
             'sender',
@@ -177,6 +213,13 @@ final class DashaMailApiTransport extends AbstractApiTransport
             'subject',
             'content-type',
             'accept',
+            'dm-message-id',
+            'dm-campaign-id',
+            'dm-delivery-timestamp',
+            'dm-domain',
+            'dm-ignore-delivery-policy',
+            'dm-no-track-opens',
+            'dm-no-track-clicks',
         ];
         foreach ($headers->all() as $name => $header) {
             if (in_array($name, $headersToBypass, true)) {
@@ -198,7 +241,6 @@ final class DashaMailApiTransport extends AbstractApiTransport
 
         return $result;
     }
-
 
     private function getEndpoint(): string
     {
