@@ -43,8 +43,10 @@ final class DashaMailPayloadConverter implements PayloadConverterInterface
             $event = new MailerEngagementEvent($name, $payload['message_id'], $payload);
         }
 
-        if (!$date = DateTimeImmutable::createFromFormat('Y-m-d H:i:s', $payload['event_time'])) {
-            throw new ParseException(sprintf('Invalid date "%s".', $payload['event_time']));
+        $eventTime = $payload['event_time'];
+        $date      = is_string($eventTime) ? DateTimeImmutable::createFromFormat('Y-m-d H:i:s', $eventTime) : false;
+        if (false === $date || $date->format('Y-m-d H:i:s') !== $eventTime) {
+            throw new ParseException(is_string($eventTime) ? sprintf('Invalid date "%s".', $eventTime) : 'Invalid date.');
         }
 
         if (

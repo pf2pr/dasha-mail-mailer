@@ -34,6 +34,15 @@ framework:
       X-Dashamail-Unsub-Ignore: '1'
 ```
 
+### Webhooks
+
+Webhook handling is optional. Install the required Symfony components before using
+`DashaMailRequestParser` or `DashaMailPayloadConverter`:
+
+```sh
+composer require symfony/webhook symfony/remote-event
+```
+
 ## Resources
 
 

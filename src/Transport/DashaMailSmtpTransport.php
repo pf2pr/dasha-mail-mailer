@@ -20,8 +20,8 @@ final class DashaMailSmtpTransport extends EsmtpTransport
         bool $isTls = false,
         private readonly bool $noTrackOpens = false,
         private readonly bool $noTrackClicks = false,
-        EventDispatcherInterface $dispatcher = null,
-        LoggerInterface $logger = null
+        ?EventDispatcherInterface $dispatcher = null,
+        ?LoggerInterface $logger = null
     ) {
         parent::__construct('smtps.dashasender.ru', $isTls ? 465 : 2525, $isTls, $dispatcher, $logger);
 
@@ -29,9 +29,10 @@ final class DashaMailSmtpTransport extends EsmtpTransport
         $this->setPassword($password);
     }
 
-    public function send(RawMessage $message, Envelope $envelope = null): ?SentMessage
+    public function send(RawMessage $message, ?Envelope $envelope = null): ?SentMessage
     {
         if ($message instanceof Message) {
+            $message = clone $message;
             $this->addDashaMailHeaders($message);
         }
 

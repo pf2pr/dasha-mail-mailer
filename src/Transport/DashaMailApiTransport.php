@@ -89,9 +89,9 @@ final class DashaMailApiTransport extends AbstractApiTransport
         #[\SensitiveParameter] private readonly string $key,
         private readonly bool $noTrackOpens = false,
         private readonly bool $noTrackClicks = false,
-        HttpClientInterface $client = null,
-        EventDispatcherInterface $dispatcher = null,
-        LoggerInterface $logger = null
+        ?HttpClientInterface $client = null,
+        ?EventDispatcherInterface $dispatcher = null,
+        ?LoggerInterface $logger = null
     ) {
         parent::__construct($client, $dispatcher, $logger);
     }
@@ -133,12 +133,14 @@ final class DashaMailApiTransport extends AbstractApiTransport
                 $response
             );
         } catch (TransportExceptionInterface $e) {
-            throw new HttpTransportException('Could not reach the remote Mailgun server.', $response, 0, $e);
+            throw new HttpTransportException('Could not reach the remote DashaMail server.', $response, 0, $e);
         }
 
         if (200 !== $statusCode) {
+            $error = $result['message'] ?? $result['error'] ?? $response->getContent(false);
+
             throw new HttpTransportException(
-                'Unable to send an email: ' . $result['message'] . sprintf(' (code %d).', $statusCode),
+                'Unable to send an email: ' . (is_scalar($error) ? (string) $error : $response->getContent(false)) . sprintf(' (code %d).', $statusCode),
                 $response
             );
         }
