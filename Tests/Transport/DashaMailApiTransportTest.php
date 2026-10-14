@@ -72,7 +72,7 @@ final class DashaMailApiTransportTest extends TestCase
         $transport = new DashaMailApiTransport('ACCESS_KEY');
         $method    = new ReflectionMethod(DashaMailApiTransport::class, 'getPayload');
         $payload   = $method->invoke($transport, $email, $envelope);
-        $headers   = $payload['headers'];
+        $headers   = json_decode($payload['headers'], true, 512, JSON_THROW_ON_ERROR);
 
         self::assertArrayHasKey('X-Dashamail-Unsub-Ignore', $headers);
         self::assertSame('1', $headers['X-Dashamail-Unsub-Ignore']);
@@ -166,8 +166,10 @@ final class DashaMailApiTransportTest extends TestCase
                 $content .= $chunk;
             }
 
-            $this->assertStringContainsString("Content-Disposition: form-data; name=\"headers[X-Tag][0]\"\r\n\r\ntest-tag-foo\r\n", $content);
-            $this->assertStringContainsString("Content-Disposition: form-data; name=\"headers[X-Tag][1]\"\r\n\r\ntest-tag-bar\r\n", $content);
+            $this->assertStringContainsString(
+                "Content-Disposition: form-data; name=\"headers\"\r\n\r\n{\"X-Tag\":[\"test-tag-foo\",\"test-tag-bar\"]}\r\n",
+                $content
+            );
 
             return new MockResponse(
                 json_encode(['response' => ['data' => ['transaction_id' => 'test-message-id']]]),
@@ -223,6 +225,28 @@ final class DashaMailApiTransportTest extends TestCase
         $transport->send($mail);
     }
 
+    public function testSendWrapsJsonErrorResponseWithoutMessage(): void
+    {
+        $client = new MockHttpClient(new MockResponse(json_encode(['error' => 'denied']), [
+            'http_code'        => 500,
+            'response_headers' => [
+                'content-type' => 'application/json',
+            ],
+        ]));
+        $transport = new DashaMailApiTransport('ACCESS_KEY', false, false, $client);
+
+        $mail = new Email();
+        $mail->subject('Test Email')
+            ->to(new Address('to@example.com'))
+            ->from(new Address('from@example.com'))
+            ->text('Test email text')
+        ;
+
+        $this->expectException(HttpTransportException::class);
+        $this->expectExceptionMessage('Unable to send an email: denied (code 500).');
+        $transport->send($mail);
+    }
+
     public function testSendThrowsForErrorResponseWithContentTypeTextHtml(): void
     {
         $client = new MockHttpClient(function (string $method, string $url, array $options): ResponseInterface {
@@ -266,7 +290,7 @@ final class DashaMailApiTransportTest extends TestCase
         $transport = new DashaMailApiTransport('ACCESS_KEY');
         $method    = new ReflectionMethod(DashaMailApiTransport::class, 'getPayload');
         $payload   = $method->invoke($transport, $email, $envelope);
-        $headers   = $payload['headers'];
+        $headers   = json_decode($payload['headers'], true, 512, JSON_THROW_ON_ERROR);
 
         self::assertArrayHasKey('X-Dashamail-Unsub-Ignore', $headers);
         self::assertSame('1', $headers['X-Dashamail-Unsub-Ignore']);
