@@ -107,7 +107,7 @@ final class DashaMailApiTransportTest extends TestCase
         $payload   = $method->invoke($transport, $email, $envelope);
 
         self::assertArrayHasKey('no_track_opens', $payload);
-        self::assertSame('true', $payload['no_track_opens']);
+        self::assertTrue($payload['no_track_opens']);
     }
 
     public function testNoTrackClicksTrue(): void
@@ -120,30 +120,44 @@ final class DashaMailApiTransportTest extends TestCase
         $payload   = $method->invoke($transport, $email, $envelope);
 
         self::assertArrayHasKey('no_track_clicks', $payload);
-        self::assertSame('true', $payload['no_track_clicks']);
+        self::assertTrue($payload['no_track_clicks']);
     }
 
     public function testSend(): void
     {
         $client = new MockHttpClient(function (string $method, string $url, array $options): ResponseInterface {
-            $this->assertSame('POST', $method);
-            $this->assertSame('https://api.dashamail.com:7831/?method=transactional.send&api_key=ACCESS_KEY', $url);
+            self::assertSame('POST', $method);
+            self::assertSame('https://api.dashamail.com:7831/v2/transactional/messages', $url);
+            self::assertContains('Authorization: Bearer ACCESS_KEY', $options['headers']);
 
-            $content = '';
-            while ($chunk = $options['body']()) {
-                $content .= $chunk;
-            }
+            $payload = json_decode($options['body'], true, 512, JSON_THROW_ON_ERROR);
+            self::assertSame('Test Email', $payload['subject']);
+            self::assertSame('"To Name" <to@example.com>', $payload['to']);
+            self::assertSame('From Name', $payload['from_name']);
+            self::assertSame('from@example.com', $payload['from_email']);
+            self::assertSame('Test email text', $payload['plain_text']);
 
-            $this->assertStringContainsString('Test Email', $content);
-            $this->assertStringContainsString('"To Name" <to@example.com>', $content);
-            $this->assertStringContainsString("Content-Disposition: form-data; name=\"from_name\"\r\n\r\nFrom Name\r\n", $content);
-            $this->assertStringContainsString("Content-Disposition: form-data; name=\"from_email\"\r\n\r\nfrom@example.com\r\n", $content);
-            $this->assertStringContainsString('Test email text', $content);
+            self::assertSame(
+                [
+                    [
+                        'name'     => 'report.txt',
+                        'filebody' => base64_encode('attachment contents'),
+                    ],
+                ],
+                json_decode($payload['attachments'], true, 512, JSON_THROW_ON_ERROR)
+            );
+
+            $inlines = json_decode($payload['inline'], true, 512, JSON_THROW_ON_ERROR);
+            self::assertCount(1, $inlines);
+            self::assertSame('image/png', $inlines[0]['mime_type']);
+            self::assertSame('logo.png', $inlines[0]['filename']);
+            self::assertSame(base64_encode('inline contents'), $inlines[0]['body']);
+            self::assertNotSame('', $inlines[0]['cid']);
 
             return new MockResponse(
                 json_encode(['response' => ['data' => ['transaction_id' => 'foobar']]]),
                 [
-                    'http_code' => 200,
+                    'http_code' => 201,
                 ]
             );
         });
@@ -155,6 +169,8 @@ final class DashaMailApiTransportTest extends TestCase
             ->to(new Address('to@example.com', 'To Name'))
             ->from(new Address('from@example.com', 'From Name'))
             ->text('Test email text')
+            ->attach('attachment contents', 'report.txt', 'text/plain')
+            ->embed('inline contents', 'logo.png', 'image/png')
         ;
 
         $message = $transport->send($mail);
@@ -165,20 +181,15 @@ final class DashaMailApiTransportTest extends TestCase
     public function testSendWithMultipleTagHeaders(): void
     {
         $client = new MockHttpClient(function (string $method, string $url, array $options): ResponseInterface {
-            $content = '';
-            while ($chunk = $options['body']()) {
-                $content .= $chunk;
-            }
+            $payload = json_decode($options['body'], true, 512, JSON_THROW_ON_ERROR);
+            $headers = json_decode($payload['headers'], true, 512, JSON_THROW_ON_ERROR);
 
-            $this->assertStringContainsString(
-                "Content-Disposition: form-data; name=\"headers\"\r\n\r\n{\"X-Tag\":[\"test-tag-foo\",\"test-tag-bar\"]}\r\n",
-                $content
-            );
+            self::assertSame(['test-tag-foo', 'test-tag-bar'], $headers['X-Tag']);
 
             return new MockResponse(
                 json_encode(['response' => ['data' => ['transaction_id' => 'test-message-id']]]),
                 [
-                    'http_code' => 200,
+                    'http_code' => 201,
                 ]
             );
         });
@@ -205,9 +216,9 @@ final class DashaMailApiTransportTest extends TestCase
     {
         $client = new MockHttpClient(function (string $method, string $url): ResponseInterface {
             $this->assertSame('POST', $method);
-            $this->assertSame('https://api.dashamail.com:7831/?method=transactional.send&api_key=ACCESS_KEY', $url);
+            self::assertSame('https://api.dashamail.com:7831/v2/transactional/messages', $url);
 
-            return new MockResponse(json_encode(['message' => 'i\'m a teapot']), [
+            return new MockResponse(json_encode(['error' => ['code' => 1, 'message' => 'i\'m a teapot']]), [
                 'http_code'        => 418,
                 'response_headers' => [
                     'content-type' => 'application/json',
@@ -229,9 +240,9 @@ final class DashaMailApiTransportTest extends TestCase
         $transport->send($mail);
     }
 
-    public function testSendWrapsJsonErrorResponseWithoutMessage(): void
+    public function testSendUsesApiErrorMessage(): void
     {
-        $client = new MockHttpClient(new MockResponse(json_encode(['error' => 'denied']), [
+        $client = new MockHttpClient(new MockResponse(json_encode(['error' => ['code' => 1, 'message' => 'denied']]), [
             'http_code'        => 500,
             'response_headers' => [
                 'content-type' => 'application/json',
@@ -255,8 +266,7 @@ final class DashaMailApiTransportTest extends TestCase
     {
         $client = new MockHttpClient(function (string $method, string $url, array $options): ResponseInterface {
             $this->assertSame('POST', $method);
-            $this->assertSame('https://api.dashamail.com:7831/?method=transactional.send&api_key=ACCESS_KEY', $url);
-            // NOTE: Mailgun API does this even if "Accept" request header value is "application/json".
+            self::assertSame('https://api.dashamail.com:7831/v2/transactional/messages', $url);
             return new MockResponse('Forbidden', [
                 'http_code'        => 401,
                 'response_headers' => [
