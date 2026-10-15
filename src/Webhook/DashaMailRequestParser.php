@@ -30,17 +30,13 @@ final class DashaMailRequestParser extends AbstractRequestParser
         );
     }
 
-    protected function doParse(Request $request, string $secret): ?AbstractMailerEvent
+    protected function doParse(Request $request, string $secret): AbstractMailerEvent
     {
         $content = $request->getPayload()->all();
-        if (
-            !isset($content['event'])
-            || !isset($content['email'])
-            || !isset($content['message_id'])
-            || !isset($content['event_time'])
-            || !isset($content['secret'])
-        ) {
-            throw new RejectWebhookException(406, 'Payload is malformed.');
+        foreach (['event', 'email', 'message_id', 'event_time', 'secret'] as $field) {
+            if (!is_string($content[$field] ?? null)) {
+                throw new RejectWebhookException(406, 'Payload is malformed.');
+            }
         }
 
         if ($content['secret'] !== md5($content['email'] . $content['message_id'] . $secret)) {

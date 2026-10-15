@@ -46,6 +46,19 @@ where:
 
 The API transport uses DashaMail REST API v2.
 
+### API delivery semantics
+
+- The envelope recipient list controls delivery to `To`, `Cc` and `Bcc`. Symfony
+  `framework.mailer.envelope.recipients` overrides also exclude original copy
+  recipients unless they are included in the overridden envelope.
+- The visible sender comes from the message's `From` header, or `Sender` when
+  `From` is absent; overriding the envelope sender does not replace it.
+- Plain-text and HTML bodies support strings and streams. Their declared charset
+  is converted to UTF-8 for the API request. Named inline image references are
+  resolved through Symfony Mime so HTML links match attachment content IDs.
+- HTTP transport failures use Symfony Mailer exceptions and participate in
+  `failover(...)`, including failures raised before an HTTP response is available.
+
 ### Per-message options
 
 The same DashaMail headers work with API and SMTP transports:
@@ -86,6 +99,12 @@ Webhook handling is optional. Install the required Symfony components before usi
 ```sh
 composer require symfony/webhook symfony/remote-event
 ```
+
+Required webhook fields (`event`, `email`, `message_id`, `event_time` and `secret`)
+must be strings. Optional `custom_vars` accepts an empty string or a JSON object
+or array encoded as a string. Invalid field types, dates, JSON and scalar JSON
+metadata are rejected with HTTP 406. Direct use of `DashaMailPayloadConverter`
+reports malformed event data with `ParseException`.
 
 ## Resources
 

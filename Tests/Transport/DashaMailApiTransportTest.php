@@ -9,14 +9,19 @@ use DateTimeInterface;
 use Pf2Pr\DashaMailMailer\Transport\DashaMailApiTransport;
 use PHPUnit\Framework\TestCase;
 use ReflectionMethod;
+use Symfony\Component\EventDispatcher\EventDispatcher;
+use Symfony\Component\HttpClient\Exception\TransportException as HttpClientTransportException;
 use Symfony\Component\HttpClient\MockHttpClient;
 use Symfony\Component\HttpClient\Response\MockResponse;
 use Symfony\Component\Mailer\Envelope;
+use Symfony\Component\Mailer\EventListener\EnvelopeListener;
 use Symfony\Component\Mailer\Exception\HttpTransportException;
 use Symfony\Component\Mailer\Header\MetadataHeader;
 use Symfony\Component\Mailer\Header\TagHeader;
+use Symfony\Component\Mailer\Transport\FailoverTransport;
 use Symfony\Component\Mime\Address;
 use Symfony\Component\Mime\Email;
+use Symfony\Component\Mime\Part\DataPart;
 use Symfony\Contracts\HttpClient\ResponseInterface;
 
 /**
@@ -178,7 +183,7 @@ final class DashaMailApiTransportTest extends TestCase
             self::assertSame('image/png', $inlines[0]['mime_type']);
             self::assertSame('logo.png', $inlines[0]['filename']);
             self::assertSame(base64_encode('inline contents'), $inlines[0]['body']);
-            self::assertNotSame('', $inlines[0]['cid']);
+            self::assertSame('<img src="cid:' . $inlines[0]['cid'] . '">', $payload['message']);
 
             return new MockResponse(
                 json_encode(['response' => ['data' => ['transaction_id' => 'foobar']]]),
@@ -195,6 +200,7 @@ final class DashaMailApiTransportTest extends TestCase
             ->to(new Address('to@example.com', 'To Name'))
             ->from(new Address('from@example.com', 'From Name'))
             ->text('Test email text')
+            ->html('<img src="cid:logo.png">')
             ->attach('attachment contents', 'report.txt', 'text/plain')
             ->embed('inline contents', 'logo.png', 'image/png')
         ;
@@ -202,6 +208,182 @@ final class DashaMailApiTransportTest extends TestCase
         $message = $transport->send($mail);
 
         self::assertSame('foobar', $message->getMessageId());
+    }
+
+    public function testSendRedirectsAllEnvelopeRecipients(): void
+    {
+        $dispatcher = new EventDispatcher();
+        $dispatcher->addSubscriber(new EnvelopeListener(null, ['sandbox@example.com']));
+        $mail = (new Email())
+            ->from('from@example.com')
+            ->to('to@example.com')
+            ->cc('cc@example.com')
+            ->bcc('hidden@example.com')
+            ->text('Test email text')
+        ;
+
+        $payload = $this->sendPayload($mail, null, $dispatcher);
+
+        self::assertSame('sandbox@example.com', $payload['to']);
+        self::assertSame('', $payload['cc'] ?? '');
+        self::assertSame('', $payload['bcc'] ?? '');
+    }
+
+    public function testSendMatchesExplicitEnvelopeRecipientsByAddress(): void
+    {
+        $mail = (new Email())
+            ->from('from@example.com')
+            ->to('to@example.com')
+            ->cc('cc@example.com')
+            ->bcc('hidden@example.com')
+            ->text('Test email text')
+        ;
+        $envelope = new Envelope(new Address('from@example.com'), [
+            new Address('to@example.com'),
+            new Address('cc@example.com'),
+            new Address('hidden@example.com'),
+        ]);
+
+        $payload = $this->sendPayload($mail, $envelope);
+
+        self::assertSame('to@example.com', $payload['to']);
+        self::assertSame('cc@example.com', $payload['cc']);
+        self::assertSame('hidden@example.com', $payload['bcc']);
+    }
+
+    /**
+     * @dataProvider provideVisibleSenders
+     */
+    public function testSendPreservesVisibleSender(bool $hasFrom, string $address, string $name): void
+    {
+        $mail = (new Email())
+            ->sender(new Address('sender@example.com', 'Message Sender'))
+            ->to('to@example.com')
+            ->text('Test email text')
+        ;
+        if ($hasFrom) {
+            $mail->from(new Address('author@example.com', 'Original Author'));
+        }
+        $envelope = new Envelope(new Address('bounce@example.com', 'Envelope Sender'), [new Address('to@example.com')]);
+
+        $payload = $this->sendPayload($mail, $envelope);
+
+        self::assertSame($address, $payload['from_email']);
+        self::assertSame($name, $payload['from_name']);
+    }
+
+    /**
+     * @return iterable<string, array{bool, string, string}>
+     */
+    public static function provideVisibleSenders(): iterable
+    {
+        yield 'From takes precedence over Sender and envelope' => [true, 'author@example.com', 'Original Author'];
+        yield 'Sender supplies missing From' => [false, 'sender@example.com', 'Message Sender'];
+    }
+
+    public function testSendPreservesCustomCidAndDistinctPrefixedInlineNames(): void
+    {
+        $custom = (new DataPart('custom image', 'custom.png', 'image/png'))
+            ->asInline()
+            ->setContentId('custom@example.com')
+        ;
+        $mail = (new Email())
+            ->from('from@example.com')
+            ->to('to@example.com')
+            ->html('<img src="cid:logo.png"><img src="cid:logo.png.large"><img src="cid:custom@example.com">')
+            ->embed('small image', 'logo.png', 'image/png')
+            ->embed('large image', 'logo.png.large', 'image/png')
+            ->addPart($custom)
+        ;
+
+        $payload = $this->sendPayload($mail);
+        $inlines = json_decode($payload['inline'], true, 512, JSON_THROW_ON_ERROR);
+        $cids = array_column($inlines, 'cid', 'filename');
+
+        self::assertCount(3, $inlines);
+        self::assertSame('custom@example.com', $cids['custom.png']);
+        self::assertSame(
+            '<img src="cid:' . $cids['logo.png'] . '"><img src="cid:' . $cids['logo.png.large'] . '"><img src="cid:custom@example.com">',
+            $payload['message']
+        );
+    }
+
+    /**
+     * @dataProvider provideBodies
+     */
+    public function testSendPreservesBodyContent(string $text, string $html, string $charset, string $expectedText, string $expectedHtml, bool $stream): void
+    {
+        $textStream = null;
+        $htmlStream = null;
+        try {
+            if ($stream) {
+                $textStream = fopen('php://temp', 'w+');
+                $htmlStream = fopen('php://temp', 'w+');
+                fwrite($textStream, $text);
+                fwrite($htmlStream, $html);
+                rewind($textStream);
+                rewind($htmlStream);
+            }
+            $mail = (new Email())
+                ->from('from@example.com')
+                ->to('to@example.com')
+                ->text($stream ? $textStream : $text, $charset)
+                ->html($stream ? $htmlStream : $html, $charset)
+            ;
+
+            $payload = $this->sendPayload($mail);
+            self::assertSame($expectedText, $payload['plain_text']);
+            self::assertSame($expectedHtml, $payload['message']);
+
+            if ($stream) {
+                $payload = $this->sendPayload($mail);
+                self::assertSame($expectedText, $payload['plain_text']);
+                self::assertSame($expectedHtml, $payload['message']);
+            }
+        } finally {
+            if (is_resource($textStream)) {
+                fclose($textStream);
+            }
+            if (is_resource($htmlStream)) {
+                fclose($htmlStream);
+            }
+        }
+    }
+
+    /**
+     * @return iterable<string, array{string, string, string, string, string, bool}>
+     */
+    public static function provideBodies(): iterable
+    {
+        yield 'UTF-8 streams' => ['Plain café', '<p>HTML café</p>', 'utf-8', 'Plain café', '<p>HTML café</p>', true];
+        yield 'ISO-8859-1 strings' => ["Plain caf\xe9", "<p>HTML caf\xe9</p>", 'iso-8859-1', 'Plain café', '<p>HTML café</p>', false];
+        yield 'ISO-8859-1 streams' => ["Plain caf\xe9", "<p>HTML caf\xe9</p>", 'iso-8859-1', 'Plain café', '<p>HTML café</p>', true];
+        yield 'literal zero strings' => ['0', '0', 'utf-8', '0', '0', false];
+        yield 'literal zero streams' => ['0', '0', 'utf-8', '0', '0', true];
+    }
+
+    public function testSynchronousHttpClientFailureTriggersFailover(): void
+    {
+        $primaryRequests = 0;
+        $fallbackRequests = 0;
+        $primaryClient = new MockHttpClient(function () use (&$primaryRequests): ResponseInterface {
+            ++$primaryRequests;
+            throw new HttpClientTransportException('Connection refused');
+        });
+        $fallbackClient = new MockHttpClient(function () use (&$fallbackRequests): ResponseInterface {
+            ++$fallbackRequests;
+
+            return new MockResponse('{"response":{"data":{"transaction_id":"delivered-by-fallback"}}}', ['http_code' => 201]);
+        });
+        $transport = new FailoverTransport([
+            new DashaMailApiTransport('PRIMARY_KEY', false, false, $primaryClient),
+            new DashaMailApiTransport('FALLBACK_KEY', false, false, $fallbackClient),
+        ]);
+        $mail = (new Email())->from('from@example.com')->to('to@example.com')->text('Test email text');
+
+        self::assertSame('delivered-by-fallback', $transport->send($mail)->getMessageId());
+        self::assertSame(1, $primaryRequests);
+        self::assertSame(1, $fallbackRequests);
     }
 
     public function testSendWithMultipleTagHeaders(): void
@@ -346,5 +528,22 @@ final class DashaMailApiTransportTest extends TestCase
 
         self::assertArrayHasKey('X-Metadata-Client-ID', $headers);
         self::assertSame('12345', $headers['X-Metadata-Client-ID']);
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function sendPayload(Email $mail, ?Envelope $envelope = null, ?EventDispatcher $dispatcher = null): array
+    {
+        $payload = null;
+        $client = new MockHttpClient(function (string $method, string $url, array $options) use (&$payload): ResponseInterface {
+            $payload = json_decode($options['body'], true, 512, JSON_THROW_ON_ERROR);
+
+            return new MockResponse('{"response":{"data":{"transaction_id":"message-id"}}}', ['http_code' => 201]);
+        });
+        $transport = new DashaMailApiTransport('ACCESS_KEY', false, false, $client, $dispatcher);
+        $transport->send($mail, $envelope);
+
+        return $payload;
     }
 }
