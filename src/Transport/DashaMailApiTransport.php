@@ -8,12 +8,16 @@ use Psr\EventDispatcher\EventDispatcherInterface;
 use Psr\Log\LoggerInterface;
 use Symfony\Component\Mailer\Envelope;
 use Symfony\Component\Mailer\Exception\HttpTransportException;
+use Symfony\Component\Mailer\Exception\TransportException;
 use Symfony\Component\Mailer\Header\MetadataHeader;
 use Symfony\Component\Mailer\Header\TagHeader;
 use Symfony\Component\Mailer\SentMessage;
 use Symfony\Component\Mailer\Transport\AbstractApiTransport;
+use Symfony\Component\Mime\Address;
 use Symfony\Component\Mime\Email;
 use Symfony\Component\Mime\Header\Headers;
+use Symfony\Component\Mime\Message;
+use Symfony\Component\Mime\MessageConverter;
 use Symfony\Contracts\HttpClient\Exception\DecodingExceptionInterface;
 use Symfony\Contracts\HttpClient\Exception\TransportExceptionInterface;
 use Symfony\Contracts\HttpClient\HttpClientInterface;
@@ -59,16 +63,17 @@ final class DashaMailApiTransport extends AbstractApiTransport
     protected function doSendApi(SentMessage $sentMessage, Email $email, Envelope $envelope): ResponseInterface
     {
         $statusCode = null;
-        $response   = $this->client->request(
-            'POST',
-            'https://' . $this->getEndpoint() . '/v2/transactional/messages',
-            [
-                'auth_bearer' => $this->key,
-                'json'        => $this->getPayload($email, $envelope),
-            ]
-        );
+        $response = null;
 
         try {
+            $response = $this->client->request(
+                'POST',
+                'https://' . $this->getEndpoint() . '/v2/transactional/messages',
+                [
+                    'auth_bearer' => $this->key,
+                    'json'        => $this->getPayload($email, $envelope),
+                ]
+            );
             $statusCode = $response->getStatusCode();
             $result     = $response->toArray(false);
         } catch (DecodingExceptionInterface) {
@@ -77,6 +82,10 @@ final class DashaMailApiTransport extends AbstractApiTransport
                 $response
             );
         } catch (TransportExceptionInterface $e) {
+            if (null === $response) {
+                throw new TransportException('Could not reach the remote DashaMail server.', 0, $e);
+            }
+
             throw new HttpTransportException('Could not reach the remote DashaMail server.', $response, 0, $e);
         }
 
@@ -101,36 +110,49 @@ final class DashaMailApiTransport extends AbstractApiTransport
      */
     private function getPayload(Email $email, Envelope $envelope): array
     {
+        $text = $this->normalizeBody($email->getTextBody(), $email->getTextCharset());
+        $html = $this->normalizeBody($email->getHtmlBody(), $email->getHtmlCharset());
+
+        // Mime resolves named inline references when building the body.
+        if (null !== $html && $email->getAttachments()) {
+            $email = clone $email;
+            $email->text($text)->html($html);
+            $email = MessageConverter::toEmail(new Message($email->getHeaders(), $email->getBody()));
+            $html = $email->getHtmlBody();
+        }
+
         [$attachments, $inlines] = $this->prepareAttachments($email);
+        [$to, $cc, $bcc] = $this->prepareRecipients($email, $envelope);
+        $from = $email->getFrom()[0] ?? $email->getSender() ?? $envelope->getSender();
 
         $payload = [
             'no_track_opens'  => $this->noTrackOpens,
             'no_track_clicks' => $this->noTrackClicks,
-            'from_email'      => $envelope->getSender()->getEncodedAddress(),
-            'to'              => implode(',', $this->stringifyAddresses($this->getRecipients($email, $envelope))),
+            'from_email'      => $from->getEncodedAddress(),
+            'to'              => implode(',', $this->stringifyAddresses($to)),
             'subject'         => $email->getSubject(),
         ];
 
         $payload = array_replace($payload, $this->prepareDashaMailOptions($email->getHeaders()));
 
-        if ('' !== $envelope->getSender()->getName()) {
-            $payload['from_name'] = $envelope->getSender()->getName();
+        if ('' !== $from->getName()) {
+            $payload['from_name'] = $from->getName();
         }
 
-        if ($cc = $email->getCc()) {
+        if ($cc) {
             $payload['cc'] = implode(',', $this->stringifyAddresses($cc));
         }
 
-        if ($bcc = $email->getBcc()) {
+        if ($bcc) {
             $payload['bcc'] = implode(',', $this->stringifyAddresses($bcc));
         }
 
-        if ($email->getTextBody()) {
-            $payload['plain_text'] = $email->getTextBody();
+        if (null !== $text) {
+            $payload['plain_text'] = $text;
         }
 
-        if ($email->getHtmlBody()) {
-            $payload['message'] = $email->getHtmlBody();
+        if (null !== $html) {
+            $payload['message'] = $html;
         }
 
         if ($headers = $this->prepareHeaders($email->getHeaders())) {
@@ -146,6 +168,57 @@ final class DashaMailApiTransport extends AbstractApiTransport
         }
 
         return $payload;
+    }
+
+    /**
+     * @param resource|string|null $body
+     */
+    private function normalizeBody(mixed $body, ?string $charset): ?string
+    {
+        if (null === $body) {
+            return null;
+        }
+
+        if (is_resource($body)) {
+            if (stream_get_meta_data($body)['seekable']) {
+                rewind($body);
+            }
+            $body = stream_get_contents($body);
+            if (false === $body) {
+                throw new TransportException('Unable to read the email body.');
+            }
+        }
+
+        return null === $charset || 0 === strcasecmp($charset, 'utf-8')
+            ? $body
+            : mb_convert_encoding($body, 'UTF-8', $charset);
+    }
+
+    /**
+     * @return array{array<string, Address>, array<string, Address>, array<string, Address>}
+     */
+    private function prepareRecipients(Email $email, Envelope $envelope): array
+    {
+        $recipients = [];
+        foreach ($envelope->getRecipients() as $recipient) {
+            $recipients[$recipient->getEncodedAddress()] = $recipient;
+        }
+
+        $cc = $bcc = [];
+        foreach ($email->getCc() as $recipient) {
+            $address = $recipient->getEncodedAddress();
+            if (isset($recipients[$address])) {
+                $cc[$address] = $recipient;
+            }
+        }
+        foreach ($email->getBcc() as $recipient) {
+            $address = $recipient->getEncodedAddress();
+            if (isset($recipients[$address])) {
+                $bcc[$address] = $recipient;
+            }
+        }
+
+        return [array_diff_key($recipients, $cc, $bcc), $cc, $bcc];
     }
 
     /**
