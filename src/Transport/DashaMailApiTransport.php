@@ -16,8 +16,12 @@ use Symfony\Component\Mailer\Transport\AbstractApiTransport;
 use Symfony\Component\Mime\Address;
 use Symfony\Component\Mime\Email;
 use Symfony\Component\Mime\Header\Headers;
-use Symfony\Component\Mime\Message;
-use Symfony\Component\Mime\MessageConverter;
+use Symfony\Component\Mime\Part\AbstractPart;
+use Symfony\Component\Mime\Part\DataPart;
+use Symfony\Component\Mime\Part\Multipart\AlternativePart;
+use Symfony\Component\Mime\Part\Multipart\MixedPart;
+use Symfony\Component\Mime\Part\Multipart\RelatedPart;
+use Symfony\Component\Mime\Part\TextPart;
 use Symfony\Contracts\HttpClient\Exception\DecodingExceptionInterface;
 use Symfony\Contracts\HttpClient\Exception\TransportExceptionInterface;
 use Symfony\Contracts\HttpClient\HttpClientInterface;
@@ -71,7 +75,8 @@ final class DashaMailApiTransport extends AbstractApiTransport
                 'https://' . $this->getEndpoint() . '/v2/transactional/messages',
                 [
                     'auth_bearer' => $this->key,
-                    'json'        => $this->getPayload($email, $envelope),
+                    'buffer'      => true,
+                    'json'        => $this->getPayload($this->normalizeEmail($email), $envelope),
                 ]
             );
             $statusCode = $response->getStatusCode();
@@ -113,12 +118,8 @@ final class DashaMailApiTransport extends AbstractApiTransport
         $text = $this->normalizeBody($email->getTextBody(), $email->getTextCharset());
         $html = $this->normalizeBody($email->getHtmlBody(), $email->getHtmlCharset());
 
-        // Mime resolves named inline references when building the body.
-        if (null !== $html && $email->getAttachments()) {
-            $email = clone $email;
-            $email->text($text)->html($html);
-            $email = MessageConverter::toEmail(new Message($email->getHeaders(), $email->getBody()));
-            $html = $email->getHtmlBody();
+        if (null !== $html) {
+            $html = $this->resolveInlineReferences($html, $email->getAttachments());
         }
 
         [$attachments, $inlines] = $this->prepareAttachments($email);
@@ -168,6 +169,206 @@ final class DashaMailApiTransport extends AbstractApiTransport
         }
 
         return $payload;
+    }
+
+    private function normalizeEmail(Email $email): Email
+    {
+        $email = clone $email;
+        $text = $this->normalizeBody($email->getTextBody(), $email->getTextCharset());
+        $html = $this->normalizeBody($email->getHtmlBody(), $email->getHtmlCharset());
+        if (null !== $html) {
+            // Resolve whole URLs before Mime can replace a filename inside another CID.
+            $html = $this->resolveInlineReferences($html, $email->getAttachments());
+        }
+        $email->text($text)->html($html);
+
+        $normalized = new Email($email->getHeaders());
+        $this->normalizePart($this->getMimeBody($email), $normalized);
+
+        return $normalized;
+    }
+
+    private function getMimeBody(Email $email): AbstractPart
+    {
+        $attachmentState = [];
+        foreach ($email->getAttachments() as $attachment) {
+            $attachmentState[] = [$attachment, $attachment->getName(), $attachment->getDisposition()];
+            if (null !== $attachment->getName()) {
+                $attachment->setName('');
+            }
+        }
+
+        try {
+            // URLs are already resolved. Do not let Mime resolve filename aliases again.
+            return $email->getBody();
+        } finally {
+            foreach ($attachmentState as [$attachment, $name, $disposition]) {
+                if (null !== $name) {
+                    $attachment->setName($name);
+                }
+                if (null !== $disposition) {
+                    $attachment->setDisposition($disposition);
+                }
+            }
+        }
+    }
+
+    private function normalizePart(AbstractPart $part, Email $email): void
+    {
+        if ($part instanceof DataPart) {
+            $email->addPart(clone $part);
+
+            return;
+        }
+
+        if ($part instanceof MixedPart || $part instanceof RelatedPart || $part instanceof AlternativePart) {
+            foreach ($part->getParts() as $child) {
+                $this->normalizePart($child, $email);
+            }
+
+            return;
+        }
+
+        if (!$part instanceof TextPart || !in_array($part->getMediaSubtype(), ['plain', 'html'], true)) {
+            throw new TransportException('Unable to send an email with an unsupported MIME body.');
+        }
+
+        $html = 'html' === $part->getMediaSubtype();
+        if (null !== ($html ? $email->getHtmlBody() : $email->getTextBody())) {
+            throw new TransportException('Unable to send an email with multiple MIME bodies of the same type.');
+        }
+
+        // Capture the body before getBody() can consume a non-seekable "0" stream.
+        $encodedBody = '';
+        foreach ($part->bodyToIterable() as $chunk) {
+            $encodedBody .= $chunk;
+        }
+
+        $body = $part->getBody();
+        $headers = $part->getPreparedHeaders();
+        if ('' === $body) {
+            $body = match ($headers->getHeaderBody('Content-Transfer-Encoding')) {
+                'base64' => base64_decode($encodedBody, true),
+                'quoted-printable' => quoted_printable_decode($encodedBody),
+                default => $encodedBody,
+            };
+            if (false === $body) {
+                throw new TransportException('Unable to decode the MIME body.');
+            }
+        }
+        $charset = $headers->getHeaderParameter('Content-Type', 'charset') ?? 'utf-8';
+        if ($html) {
+            $email->html($body, $charset);
+        } else {
+            $email->text($body, $charset);
+        }
+    }
+
+    /**
+     * @param list<DataPart> $attachments
+     */
+    private function resolveInlineReferences(string $html, array $attachments): string
+    {
+        $references = [];
+        foreach ($attachments as $attachment) {
+            if ($attachment->hasContentId()) {
+                $references[$attachment->getContentId()] ??= $attachment;
+            }
+        }
+        foreach ($attachments as $attachment) {
+            if (null !== $name = $attachment->getName()) {
+                $references[$name] ??= $attachment;
+            }
+        }
+
+        if (!$references) {
+            return $html;
+        }
+
+        // Keep text, comments and unrelated attribute values out of URL rewriting.
+        return preg_replace_callback(
+            <<<'REGEX'
+            ~<!--.*?-->
+            |<(?<raw>script|textarea|title)(?=[\s/>])(?:[^>"']|"[^"]*"|'[^']*')*>.*?</\k<raw>\s*>
+            |(?<style><style(?=[\s/>])(?:[^>"']|"[^"]*"|'[^']*')*>)(?<css>.*?)(?<styleEnd></style\s*>)
+            |<(?<tag>[a-z][a-z0-9:-]*)(?<attributes>(?:[^>"']|"[^"]*"|'[^']*')*)>
+            ~isx
+            REGEX,
+            function (array $match) use ($references): string {
+                if ('' !== ($match['style'] ?? '')) {
+                    return $match['style'] . $this->resolveInlineCss($match['css'], $references) . $match['styleEnd'];
+                }
+                if ('' === ($match['tag'] ?? '')) {
+                    return $match[0];
+                }
+
+                $attributes = preg_replace_callback(
+                    <<<'REGEX'
+                    ~(?<prefix>\s+(?<name>[^\s=/>]+)\s*=\s*)(?:(?<quote>["'])(?<quoted>.*?)\k<quote>|(?<unquoted>[^\s>]+))~s
+                    REGEX,
+                    function (array $attribute) use ($match, $references): string {
+                        $name = strtolower($attribute['name']);
+                        $quote = $attribute['quote'];
+                        $value = '' !== $quote ? $attribute['quoted'] : $attribute['unquoted'];
+
+                        if ('style' === $name) {
+                            $value = $this->resolveInlineCss($value, $references);
+                        } elseif ('background' === $name || ('src' === $name && 'img' === strtolower($match['tag']))) {
+                            $value = $this->resolveInlineUrl($value, $references);
+                        } else {
+                            return $attribute[0];
+                        }
+
+                        return $attribute['prefix'] . $quote . $value . $quote;
+                    },
+                    $match['attributes']
+                );
+
+                return '<' . $match['tag'] . $attributes . '>';
+            },
+            $html
+        );
+    }
+
+    /**
+     * @param array<string|int, DataPart> $references
+     */
+    private function resolveInlineCss(string $css, array $references): string
+    {
+        return preg_replace_callback(
+            <<<'REGEX'
+            ~(?<prefix>\burl\(\s*)(?:(?<quote>["'])(?<quoted>.*?)\k<quote>|(?<unquoted>[^\s"'()]*))(?<suffix>\s*\))
+            |/\*.*?\*/
+            |"(?:\\.|[^"\\])*"
+            |'(?:\\.|[^'\\])*'
+            ~isx
+            REGEX,
+            function (array $match) use ($references): string {
+                if ('' === ($match['prefix'] ?? '')) {
+                    return $match[0];
+                }
+                $quote = $match['quote'];
+                $url = '' !== $quote ? $match['quoted'] : $match['unquoted'];
+
+                return $match['prefix'] . $quote . $this->resolveInlineUrl($url, $references) . $quote . $match['suffix'];
+            },
+            $css
+        );
+    }
+
+    /**
+     * @param array<string|int, DataPart> $references
+     */
+    private function resolveInlineUrl(string $url, array $references): string
+    {
+        if (0 !== strncasecmp($url, 'cid:', 4) || !isset($references[substr($url, 4)])) {
+            return $url;
+        }
+
+        $attachment = $references[substr($url, 4)];
+        $attachment->asInline();
+
+        return 'cid:' . $attachment->getContentId();
     }
 
     /**
@@ -232,22 +433,49 @@ final class DashaMailApiTransport extends AbstractApiTransport
         $attachments = $inlines = [];
         foreach ($email->getAttachments() as $attachment) {
             $headers = $attachment->getPreparedHeaders();
+            $body = $this->prepareAttachmentBody($attachment);
             if ('inline' === $headers->getHeaderBody('Content-Disposition')) {
                 $inlines[] = [
                     'mime_type' => $attachment->getMediaType() . '/' . $attachment->getMediaSubtype(),
                     'filename'  => $attachment->getFilename() ?? 'inline',
-                    'body'      => base64_encode($attachment->getBody()),
+                    'body'      => $body,
                     'cid'       => $attachment->getContentId(),
                 ];
             } else {
                 $attachments[] = [
                     'name'     => $attachment->getFilename() ?? 'attachment',
-                    'filebody' => base64_encode($attachment->getBody()),
+                    'filebody' => $body,
                 ];
             }
         }
 
         return [$attachments, $inlines];
+    }
+
+    private function prepareAttachmentBody(DataPart $attachment): string
+    {
+        if (DataPart::class !== $attachment::class && TextPart::class !== (new \ReflectionMethod($attachment, 'getBody'))->getDeclaringClass()->getName()) {
+            return base64_encode($attachment->getBody());
+        }
+
+        // Symfony's getBody() loses streamed "0"; MIME encoders can change line endings.
+        // No public raw-stream getter exists, so keep this upstream workaround isolated.
+        static $bodyProperty = null;
+        $bodyProperty ??= new \ReflectionProperty(TextPart::class, 'body');
+        $body = $bodyProperty->getValue($attachment);
+        if (!is_resource($body)) {
+            return base64_encode($attachment->getBody());
+        }
+
+        if (stream_get_meta_data($body)['seekable'] && 0 === fseek($body, 0, SEEK_CUR)) {
+            rewind($body);
+        }
+        $body = stream_get_contents($body);
+        if (false === $body) {
+            throw new TransportException('Unable to read the attachment body.');
+        }
+
+        return base64_encode($body);
     }
 
     /**

@@ -9,6 +9,7 @@ use Psr\Log\LoggerInterface;
 use Symfony\Component\Mailer\Envelope;
 use Symfony\Component\Mailer\SentMessage;
 use Symfony\Component\Mailer\Transport\Smtp\EsmtpTransport;
+use Symfony\Component\Mime\Header\Headers;
 use Symfony\Component\Mime\Message;
 use Symfony\Component\Mime\RawMessage;
 
@@ -33,20 +34,57 @@ final class DashaMailSmtpTransport extends EsmtpTransport
     {
         if ($message instanceof Message) {
             $message = clone $message;
-            $this->addDashaMailHeaders($message);
+            $this->addDashaMailHeaders($message->getHeaders());
+        } elseif ($this->noTrackOpens || $this->noTrackClicks) {
+            $headers = new Headers();
+            $this->addDashaMailHeaders($headers);
+            $message = new RawMessage($this->appendRawHeaders($message, $headers->toString()));
         }
 
         return parent::send($message, $envelope);
     }
 
-    private function addDashaMailHeaders(Message $message): void
+    private function addDashaMailHeaders(Headers $headers): void
     {
         if (true === $this->noTrackOpens) {
-            $message->getHeaders()->addTextHeader('DM-No-Track-Opens', 'true');
+            $headers->addTextHeader('DM-No-Track-Opens', 'true');
         }
 
         if (true === $this->noTrackClicks) {
-            $message->getHeaders()->addTextHeader('DM-No-Track-Clicks', 'true');
+            $headers->addTextHeader('DM-No-Track-Clicks', 'true');
+        }
+    }
+
+    /**
+     * @return iterable<string>
+     */
+    private function appendRawHeaders(RawMessage $message, string $headers): iterable
+    {
+        $buffer = '';
+        $added = false;
+        foreach ($message->toIterable() as $chunk) {
+            if ($added) {
+                yield $chunk;
+                continue;
+            }
+
+            $buffer .= $chunk;
+            if (false !== $separator = strpos($buffer, "\r\n\r\n")) {
+                // Append, like the typed-message path, without parsing or rewriting existing headers.
+                yield substr($buffer, 0, $separator + 2);
+                yield $headers;
+                yield substr($buffer, $separator + 2);
+                $buffer = '';
+                $added = true;
+            } elseif (\strlen($buffer) > 3) {
+                // Retain only a possible separator split across chunks.
+                yield substr($buffer, 0, -3);
+                $buffer = substr($buffer, -3);
+            }
+        }
+
+        if ('' !== $buffer) {
+            yield $buffer;
         }
     }
 }
