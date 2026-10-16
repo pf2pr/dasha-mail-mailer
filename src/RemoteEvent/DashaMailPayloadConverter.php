@@ -13,6 +13,7 @@ use Symfony\Component\RemoteEvent\Exception\ParseException;
 use Symfony\Component\RemoteEvent\PayloadConverterInterface;
 use ValueError;
 
+use function array_key_exists;
 use function in_array;
 use function is_array;
 use function is_string;
@@ -66,26 +67,34 @@ final class DashaMailPayloadConverter implements PayloadConverterInterface
             $event instanceof MailerDeliveryEvent
             && in_array($payload['event'], ['bounced', 'dropped'], true)
         ) {
-            $event->setReason(
-                implode(
-                    '|',
-                    array_filter(
-                        [
-                            !empty($payload['description']) ? $payload['description'] : null,
-                            !empty($payload['error']) ? $payload['error'] : null,
-                            !empty($payload['reason']) ? $payload['reason'] : null,
-                        ]
-                    )
-                )
-            );
+            $reasons = [];
+            foreach (['description', 'error', 'reason'] as $field) {
+                if (!array_key_exists($field, $payload)) {
+                    continue;
+                }
+
+                if (!is_string($payload[$field])) {
+                    throw new ParseException(sprintf('Invalid field "%s".', $field));
+                }
+
+                if ('' !== $payload[$field]) {
+                    $reasons[] = $payload[$field];
+                }
+            }
+
+            $event->setReason(implode('|', $reasons));
         }
 
         $event->setDate($date);
         $event->setRecipientEmail($payload['email']);
 
+        if (array_key_exists('custom_vars', $payload) && !is_string($payload['custom_vars'])) {
+            throw new ParseException('Invalid field "custom_vars".');
+        }
+
         try {
-            if (is_string($payload['custom_vars'] ?? null) && '' !== $payload['custom_vars']) {
-                $metadata = json_decode($payload['custom_vars'], true, 512, JSON_THROW_ON_ERROR);
+            if (isset($payload['custom_vars']) && '' !== $payload['custom_vars']) {
+                $metadata = json_decode($payload['custom_vars'], true, 512, JSON_THROW_ON_ERROR | JSON_BIGINT_AS_STRING);
                 if (!is_array($metadata)) {
                     throw new ParseException('Custom vars must decode to an array.');
                 }
