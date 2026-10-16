@@ -6,6 +6,7 @@ namespace Pf2Pr\DashaMailMailer\Tests\Transport;
 
 use DateTimeImmutable;
 use DateTimeInterface;
+use DOMDocument;
 use Pf2Pr\DashaMailMailer\Transport\DashaMailApiTransport;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
@@ -259,6 +260,58 @@ final class DashaMailApiTransportTest extends TestCase
         self::assertSame('hidden@example.com', $payload['bcc']);
     }
 
+    #[DataProvider('provideRecipientDomainCases')]
+    public function testSendKeepsCopyRecipientsSeparateAcrossDomainCase(string $headerBcc, string $envelopeBcc, string $expectedBcc): void
+    {
+        $mail = (new Email())
+            ->from('from@example.com')
+            ->to('to@example.com')
+            ->cc('copy@EXAMPLE.COM')
+            ->bcc($headerBcc)
+            ->text('Private copy')
+        ;
+        $envelope = new Envelope(new Address('from@example.com'), [
+            new Address('to@example.com'),
+            new Address('copy@example.com'),
+            new Address($envelopeBcc),
+        ]);
+
+        $payload = $this->sendPayload($mail, $envelope);
+
+        self::assertSame('to@example.com', $payload['to']);
+        self::assertSame('copy@EXAMPLE.COM', $payload['cc']);
+        self::assertSame($expectedBcc, $payload['bcc']);
+    }
+
+    /**
+     * @return iterable<string, array{string, string, string}>
+     */
+    public static function provideRecipientDomainCases(): iterable
+    {
+        yield 'ASCII domain case' => ['hidden@EXAMPLE.COM', 'hidden@example.com', 'hidden@EXAMPLE.COM'];
+        yield 'Unicode and uppercase IDN domain' => ['hidden@пример.рф', 'hidden@XN--E1AFMKFD.XN--P1AI', 'hidden@xn--e1afmkfd.xn--p1ai'];
+    }
+
+    public function testSendPreservesCaseSensitiveRecipientLocalParts(): void
+    {
+        $mail = (new Email())
+            ->from('from@example.com')
+            ->to('to@example.com')
+            ->bcc('Hidden@EXAMPLE.COM')
+            ->text('Distinct mailboxes')
+        ;
+        $envelope = new Envelope(new Address('from@example.com'), [
+            new Address('to@example.com'),
+            new Address('Hidden@example.com'),
+            new Address('hidden@example.com'),
+        ]);
+
+        $payload = $this->sendPayload($mail, $envelope);
+
+        self::assertSame('to@example.com,hidden@example.com', $payload['to']);
+        self::assertSame('Hidden@EXAMPLE.COM', $payload['bcc']);
+    }
+
     /**
      * @dataProvider provideVisibleSenders
      */
@@ -397,6 +450,168 @@ final class DashaMailApiTransportTest extends TestCase
         );
     }
 
+    #[DataProvider('provideLongHtmlContent')]
+    public function testSendPreservesLongHtmlContentWithAttachments(string $html): void
+    {
+        $mail = (new Email())
+            ->from('from@example.com')
+            ->to('to@example.com')
+            ->html($html)
+            ->attach('report bytes', 'report.txt', 'text/plain')
+        ;
+
+        $payload = $this->sendPayload($mail);
+
+        self::assertSame($html, $payload['message']);
+        self::assertArrayNotHasKey('inline', $payload);
+        self::assertSame(
+            [['name' => 'report.txt', 'filebody' => base64_encode('report bytes')]],
+            json_decode($payload['attachments'], true, 512, JSON_THROW_ON_ERROR)
+        );
+    }
+
+    /**
+     * @return iterable<string, array{string}>
+     */
+    public static function provideLongHtmlContent(): iterable
+    {
+        $long = str_repeat('x', 32768);
+        yield 'unquoted attribute' => ['<a href=' . $long . '>link</a>'];
+        yield 'quoted attribute containing tag delimiters' => ['<a title="' . $long . ' > cid:report.txt">link</a>'];
+        yield 'raw-text element attribute' => ['<script data-context=' . $long . '>url(cid:report.txt)</script>'];
+        yield 'style element attribute' => ['<style data-context=' . $long . '>p::after{content:"url(cid:report.txt)"}</style>'];
+        yield 'CSS string literal' => ['<style>p::after{content:"' . $long . ' url(cid:report.txt)"}</style>'];
+    }
+
+    #[DataProvider('provideConditionalCommentMarkers')]
+    public function testSendResolvesConditionalHtmlWithoutRewritingOrdinaryComments(string $opening, string $closing): void
+    {
+        $literalComment = '<!-- <img src="cid:logo.png"> -->';
+        $html = $opening . '<img src="cid:logo.png">' . $literalComment . '<table background="cid:logo.png"></table>' . $closing;
+        $mail = (new Email())
+            ->from('from@example.com')
+            ->to('to@example.com')
+            ->html($html)
+            ->addPart((new DataPart('logo', 'logo.png', 'image/png'))->setContentId('logo@example.com'))
+        ;
+
+        $payload = $this->sendPayload($mail);
+
+        self::assertSame(
+            $opening . '<img src="cid:logo@example.com">' . $literalComment . '<table background="cid:logo@example.com"></table>' . $closing,
+            $payload['message']
+        );
+        self::assertArrayNotHasKey('attachments', $payload);
+        self::assertSame(
+            [['mime_type' => 'image/png', 'filename' => 'logo.png', 'body' => base64_encode('logo'), 'cid' => 'logo@example.com']],
+            json_decode($payload['inline'], true, 512, JSON_THROW_ON_ERROR)
+        );
+    }
+
+    /**
+     * @return iterable<string, array{string, string}>
+     */
+    public static function provideConditionalCommentMarkers(): iterable
+    {
+        yield 'downlevel-hidden Outlook content' => ['<!--[if gte mso 9]>', '<![endif]-->'];
+        yield 'downlevel-revealed content' => ['<!--[if !mso]><!-->', '<!--<![endif]-->'];
+        yield 'downlevel-revealed comment marker' => ['<!--[if !mso]><!-- -->', '<!--<![endif]-->'];
+    }
+
+    #[DataProvider('provideHtmlEncodedCssUrls')]
+    public function testSendResolvesHtmlEncodedCssUrls(string $attribute, string $expectedStyle, string $filename): void
+    {
+        $mail = (new Email())
+            ->from('from@example.com')
+            ->to('to@example.com')
+            ->html('<div id="image" ' . $attribute . ' data-kept="original"></div>')
+            ->addPart((new DataPart('logo', $filename, 'image/png'))->setContentId('logo@example.com'))
+        ;
+
+        $payload = $this->sendPayload($mail);
+        $document = new DOMDocument();
+        $document->loadHTML($payload['message'], LIBXML_NONET);
+        $element = $document->getElementById('image');
+
+        self::assertNotNull($element);
+        self::assertSame($expectedStyle, $element->getAttribute('style'));
+        self::assertSame('original', $element->getAttribute('data-kept'));
+        self::assertArrayNotHasKey('attachments', $payload);
+        self::assertSame(
+            [['mime_type' => 'image/png', 'filename' => $filename, 'body' => base64_encode('logo'), 'cid' => 'logo@example.com']],
+            json_decode($payload['inline'], true, 512, JSON_THROW_ON_ERROR)
+        );
+    }
+
+    /**
+     * @return iterable<string, array{string, string, string}>
+     */
+    public static function provideHtmlEncodedCssUrls(): iterable
+    {
+        yield 'named quotes and literal CID text' => [
+            'style="background:url(&quot;cid:logo.png&quot;);--label:&quot;cid:logo.png&quot;"',
+            'background:url("cid:logo@example.com");--label:"cid:logo.png"',
+            'logo.png',
+        ];
+        yield 'decimal quote entities' => [
+            'style="background:url(&#39;cid:logo.png&#39;)"',
+            "background:url('cid:logo@example.com')",
+            'logo.png',
+        ];
+        yield 'hexadecimal quotes inside single-quoted attribute' => [
+            "style='background:url(&#x27;cid:logo.png&#x27;)'",
+            "background:url('cid:logo@example.com')",
+            'logo.png',
+        ];
+        yield 'unquoted attribute with encoded whitespace' => [
+            'style=background:url(&quot;cid:logo.png&quot;);&#32;--label:&quot;cid:logo.png&quot;',
+            'background:url("cid:logo@example.com"); --label:"cid:logo.png"',
+            'logo.png',
+        ];
+        yield 'encoded URL scheme and filename' => [
+            'style="background:url(&quot;c&#105;d&colon;logo&amp;small.png&quot;)"',
+            'background:url("cid:logo@example.com")',
+            'logo&small.png',
+        ];
+    }
+
+    public function testSendPreservesHtmlEncodedCssLiteralsAndRawStyleContent(): void
+    {
+        $html = '<div style="--label:&quot;url(cid:receipt.pdf)&quot;"></div>'
+            . '<style>p{background:url(&quot;cid:receipt.pdf&quot;)}</style>';
+        $mail = (new Email())
+            ->from('from@example.com')
+            ->to('to@example.com')
+            ->html($html)
+            ->attach('receipt', 'receipt.pdf', 'application/pdf')
+        ;
+
+        $payload = $this->sendPayload($mail);
+
+        self::assertSame($html, $payload['message']);
+        self::assertArrayNotHasKey('inline', $payload);
+        self::assertSame(
+            [['name' => 'receipt.pdf', 'filebody' => base64_encode('receipt')]],
+            json_decode($payload['attachments'], true, 512, JSON_THROW_ON_ERROR)
+        );
+    }
+
+    public function testSendResolvesHtmlEncodedImageSource(): void
+    {
+        $mail = (new Email())
+            ->from('from@example.com')
+            ->to('to@example.com')
+            ->html('<img src="c&#105;d&colon;logo&amp;small.png">')
+            ->addPart((new DataPart('logo', 'logo&small.png', 'image/png'))->setContentId('logo@example.com'))
+        ;
+
+        $payload = $this->sendPayload($mail);
+
+        self::assertSame('<img src="cid:logo@example.com">', $payload['message']);
+        self::assertArrayNotHasKey('attachments', $payload);
+        self::assertSame('logo@example.com', json_decode($payload['inline'], true, 512, JSON_THROW_ON_ERROR)[0]['cid']);
+    }
+
     /**
      * @param 'plain'|'html'|'alternative' $type
      *
@@ -448,6 +663,79 @@ final class DashaMailApiTransportTest extends TestCase
             yield $type => [$type, false];
             yield $type . ' overrides builder' => [$type, true];
         }
+    }
+
+    #[DataProvider('provideNonSeekableMimeBodies')]
+    public function testSendReadsExplicitNonSeekableBodyOnce(string $content, string $subtype, string $charset, string $expected, bool $shared): void
+    {
+        [$reader, $writer] = stream_socket_pair(STREAM_PF_UNIX, STREAM_SOCK_STREAM, STREAM_IPPROTO_IP);
+        try {
+            fwrite($writer, $content);
+            fclose($writer);
+            $mail = (new Email())->from('from@example.com')->to('to@example.com');
+            if ($shared) {
+                if ('html' === $subtype) {
+                    $mail->html($reader, $charset);
+                } else {
+                    $mail->text($reader, $charset);
+                }
+            }
+            $mail->setBody(new TextPart($reader, $charset, $subtype));
+
+            $payload = $this->sendPayload($mail);
+
+            self::assertSame($expected, $payload['html' === $subtype ? 'message' : 'plain_text']);
+        } finally {
+            fclose($reader);
+            if (is_resource($writer)) {
+                fclose($writer);
+            }
+        }
+    }
+
+    /**
+     * @return iterable<string, array{string, string, string, string, bool}>
+     */
+    public static function provideNonSeekableMimeBodies(): iterable
+    {
+        yield 'shared plain stream' => ["authoritative\nbody\r\n", 'plain', 'utf-8', "authoritative\nbody\r\n", true];
+        yield 'shared HTML stream' => ['<p>authoritative body</p>', 'html', 'utf-8', '<p>authoritative body</p>', true];
+        yield 'shared zero stream' => ['0', 'plain', 'utf-8', '0', true];
+        yield 'independent stream line endings' => ["LF\nCR\rCRLF\r\n", 'plain', 'utf-8', "LF\nCR\rCRLF\r\n", false];
+        yield 'shared non-UTF-8 stream' => ["caf\xe9\n", 'plain', 'iso-8859-1', "café\n", true];
+    }
+
+    public function testSendDoesNotReadClosedBuilderStreamsWithExplicitBody(): void
+    {
+        $stale = fopen('php://temp', 'w+');
+        $mail = (new Email())
+            ->from('from@example.com')
+            ->to('to@example.com')
+            ->text($stale)
+            ->html($stale)
+            ->setBody(new TextPart('authoritative body'))
+        ;
+        fclose($stale);
+
+        $payload = $this->sendPayload($mail);
+
+        self::assertSame('authoritative body', $payload['plain_text']);
+        self::assertArrayNotHasKey('message', $payload);
+    }
+
+    public function testSendPreservesOverriddenEmailBody(): void
+    {
+        $mail = new class () extends Email {
+            public function getBody(): AbstractPart
+            {
+                return new TextPart('overridden body');
+            }
+        };
+        $mail->from('from@example.com')->to('to@example.com')->text('builder body')->setBody(new TextPart('parent body'));
+
+        $payload = $this->sendPayload($mail);
+
+        self::assertSame('overridden body', $payload['plain_text']);
     }
 
     public function testSendUsesExplicitRelatedAndMixedMimeParts(): void

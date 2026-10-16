@@ -55,6 +55,8 @@ without rewriting existing headers or the MIME body.
 - The envelope recipient list controls delivery to `To`, `Cc` and `Bcc`. Symfony
   `framework.mailer.envelope.recipients` overrides also exclude original copy
   recipients unless they are included in the overridden envelope.
+  Matching ignores domain case, including IDN-encoded domains, while preserving
+  the case of the local part and the original recipient spelling.
 - The visible sender comes from the message's `From` header, or `Sender` when
   `From` is absent; overriding the envelope sender does not replace it.
 - Plain-text and HTML bodies support strings and streams. Their declared charset
@@ -62,8 +64,12 @@ without rewriting existing headers or the MIME body.
   `Email::setBody()` takes precedence over the text, HTML and attachment builder
   fields. Plain-text, HTML and standard alternative/related/mixed MIME parts are
   supported; bodies that cannot be represented by the API are rejected.
+  Overridden builder streams are not read. Selected non-seekable MIME parts are
+  consumed once without transfer-encoding round trips.
 - Named inline image references in HTML `src`/`background` attributes and CSS
   `url(...)` values are resolved as complete URLs, preserving custom content IDs.
+  This includes HTML inside Outlook conditional comments and HTML-encoded
+  attribute values; ordinary HTML comments and CSS string literals are preserved.
   Literal CID text does not turn a regular file attachment into an inline image.
 - Regular and inline attachment streams preserve their bytes, including `"0"`,
   binary data and original line endings, independently of MIME transfer encoding.

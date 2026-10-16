@@ -16,6 +16,7 @@ use Symfony\Component\Mailer\Transport\AbstractApiTransport;
 use Symfony\Component\Mime\Address;
 use Symfony\Component\Mime\Email;
 use Symfony\Component\Mime\Header\Headers;
+use Symfony\Component\Mime\Message;
 use Symfony\Component\Mime\Part\AbstractPart;
 use Symfony\Component\Mime\Part\DataPart;
 use Symfony\Component\Mime\Part\Multipart\AlternativePart;
@@ -174,16 +175,24 @@ final class DashaMailApiTransport extends AbstractApiTransport
     private function normalizeEmail(Email $email): Email
     {
         $email = clone $email;
-        $text = $this->normalizeBody($email->getTextBody(), $email->getTextCharset());
-        $html = $this->normalizeBody($email->getHtmlBody(), $email->getHtmlCharset());
-        if (null !== $html) {
-            // Resolve whole URLs before Mime can replace a filename inside another CID.
-            $html = $this->resolveInlineReferences($html, $email->getAttachments());
+        if (Email::class !== $email::class && Email::class !== (new \ReflectionMethod($email, 'getBody'))->getDeclaringClass()->getName()) {
+            $body = $email->getBody();
+        } else {
+            // Read the explicit MIME body without invoking Email's lazy builder.
+            static $getExplicitBody = null;
+            $getExplicitBody ??= new \ReflectionMethod(Message::class, 'getBody');
+            $body = $getExplicitBody->invoke($email);
         }
-        $email->text($text)->html($html);
+
+        if (null === $body) {
+            $text = $this->normalizeBody($email->getTextBody(), $email->getTextCharset());
+            $html = $this->normalizeBody($email->getHtmlBody(), $email->getHtmlCharset());
+            $email->text($text)->html($html);
+            $body = $this->getMimeBody($email);
+        }
 
         $normalized = new Email($email->getHeaders());
-        $this->normalizePart($this->getMimeBody($email), $normalized);
+        $this->normalizePart($body, $normalized);
 
         return $normalized;
     }
@@ -199,7 +208,7 @@ final class DashaMailApiTransport extends AbstractApiTransport
         }
 
         try {
-            // URLs are already resolved. Do not let Mime resolve filename aliases again.
+            // Defer filename aliases to the payload; Mime replaces them globally.
             return $email->getBody();
         } finally {
             foreach ($attachmentState as [$attachment, $name, $disposition]) {
@@ -238,24 +247,8 @@ final class DashaMailApiTransport extends AbstractApiTransport
             throw new TransportException('Unable to send an email with multiple MIME bodies of the same type.');
         }
 
-        // Capture the body before getBody() can consume a non-seekable "0" stream.
-        $encodedBody = '';
-        foreach ($part->bodyToIterable() as $chunk) {
-            $encodedBody .= $chunk;
-        }
-
-        $body = $part->getBody();
+        $body = $this->getPartBody($part);
         $headers = $part->getPreparedHeaders();
-        if ('' === $body) {
-            $body = match ($headers->getHeaderBody('Content-Transfer-Encoding')) {
-                'base64' => base64_decode($encodedBody, true),
-                'quoted-printable' => quoted_printable_decode($encodedBody),
-                default => $encodedBody,
-            };
-            if (false === $body) {
-                throw new TransportException('Unable to decode the MIME body.');
-            }
-        }
         $charset = $headers->getHeaderParameter('Content-Type', 'charset') ?? 'utf-8';
         if ($html) {
             $email->html($body, $charset);
@@ -285,13 +278,14 @@ final class DashaMailApiTransport extends AbstractApiTransport
             return $html;
         }
 
-        // Keep text, comments and unrelated attribute values out of URL rewriting.
+        // Conditional markers leave their HTML visible; ordinary comments and raw text do not.
         return preg_replace_callback(
             <<<'REGEX'
-            ~<!--.*?-->
-            |<(?<raw>script|textarea|title)(?=[\s/>])(?:[^>"']|"[^"]*"|'[^']*')*>.*?</\k<raw>\s*>
-            |(?<style><style(?=[\s/>])(?:[^>"']|"[^"]*"|'[^']*')*>)(?<css>.*?)(?<styleEnd></style\s*>)
-            |<(?<tag>[a-z][a-z0-9:-]*)(?<attributes>(?:[^>"']|"[^"]*"|'[^']*')*)>
+            ~<!--\[if\b[^\]]*+\]>(?:\s*(?:<!--(?:\s*--)?>|-->))?
+            |<!--.*?-->
+            |<(?<raw>script|textarea|title)(?=[\s/>])(?:[^>"']++|"[^"]*+"|'[^']*+')*+>.*?</\k<raw>\s*>
+            |(?<style><style(?=[\s/>])(?:[^>"']++|"[^"]*+"|'[^']*+')*+>)(?<css>.*?)(?<styleEnd></style\s*>)
+            |<(?<tag>[a-z][a-z0-9:-]*)(?<attributes>(?:[^>"']++|"[^"]*+"|'[^']*+')*+)>
             ~isx
             REGEX,
             function (array $match) use ($references): string {
@@ -311,13 +305,26 @@ final class DashaMailApiTransport extends AbstractApiTransport
                         $quote = $attribute['quote'];
                         $value = '' !== $quote ? $attribute['quoted'] : $attribute['unquoted'];
 
-                        if ('style' === $name) {
-                            $value = $this->resolveInlineCss($value, $references);
-                        } elseif ('background' === $name || ('src' === $name && 'img' === strtolower($match['tag']))) {
-                            $value = $this->resolveInlineUrl($value, $references);
-                        } else {
+                        if ('style' !== $name && 'background' !== $name && ('src' !== $name || 'img' !== strtolower($match['tag']))) {
                             return $attribute[0];
                         }
+
+                        $decoded = html_entity_decode($value, ENT_QUOTES | ENT_HTML5, 'UTF-8');
+                        $value = 'style' === $name
+                            ? $this->resolveInlineCss($decoded, $references)
+                            : $this->resolveInlineUrl($decoded, $references);
+                        if ($value === $decoded) {
+                            return $attribute[0];
+                        }
+
+                        if ('' === $quote && false !== strpbrk($value, " \t\r\n\f\"'`=<>")) {
+                            $quote = '"';
+                        }
+                        $escapes = ['&' => '&amp;', '<' => '&lt;', '>' => '&gt;'];
+                        if ('' !== $quote) {
+                            $escapes[$quote] = '"' === $quote ? '&quot;' : '&#39;';
+                        }
+                        $value = strtr($value, $escapes);
 
                         return $attribute['prefix'] . $quote . $value . $quote;
                     },
@@ -339,8 +346,8 @@ final class DashaMailApiTransport extends AbstractApiTransport
             <<<'REGEX'
             ~(?<prefix>\burl\(\s*)(?:(?<quote>["'])(?<quoted>.*?)\k<quote>|(?<unquoted>[^\s"'()]*))(?<suffix>\s*\))
             |/\*.*?\*/
-            |"(?:\\.|[^"\\])*"
-            |'(?:\\.|[^'\\])*'
+            |"(?:\\.|[^"\\]++)*+"
+            |'(?:\\.|[^'\\]++)*+'
             ~isx
             REGEX,
             function (array $match) use ($references): string {
@@ -402,24 +409,32 @@ final class DashaMailApiTransport extends AbstractApiTransport
     {
         $recipients = [];
         foreach ($envelope->getRecipients() as $recipient) {
-            $recipients[$recipient->getEncodedAddress()] = $recipient;
+            $recipients[$this->getRecipientKey($recipient)] = $recipient;
         }
 
         $cc = $bcc = [];
         foreach ($email->getCc() as $recipient) {
-            $address = $recipient->getEncodedAddress();
+            $address = $this->getRecipientKey($recipient);
             if (isset($recipients[$address])) {
                 $cc[$address] = $recipient;
             }
         }
         foreach ($email->getBcc() as $recipient) {
-            $address = $recipient->getEncodedAddress();
+            $address = $this->getRecipientKey($recipient);
             if (isset($recipients[$address])) {
                 $bcc[$address] = $recipient;
             }
         }
 
         return [array_diff_key($recipients, $cc, $bcc), $cc, $bcc];
+    }
+
+    private function getRecipientKey(Address $recipient): string
+    {
+        $address = $recipient->getEncodedAddress();
+        $domainOffset = strrpos($address, '@') + 1;
+
+        return substr($address, 0, $domainOffset) . strtolower(substr($address, $domainOffset));
     }
 
     /**
@@ -433,7 +448,7 @@ final class DashaMailApiTransport extends AbstractApiTransport
         $attachments = $inlines = [];
         foreach ($email->getAttachments() as $attachment) {
             $headers = $attachment->getPreparedHeaders();
-            $body = $this->prepareAttachmentBody($attachment);
+            $body = base64_encode($this->getPartBody($attachment));
             if ('inline' === $headers->getHeaderBody('Content-Disposition')) {
                 $inlines[] = [
                     'mime_type' => $attachment->getMediaType() . '/' . $attachment->getMediaSubtype(),
@@ -452,19 +467,19 @@ final class DashaMailApiTransport extends AbstractApiTransport
         return [$attachments, $inlines];
     }
 
-    private function prepareAttachmentBody(DataPart $attachment): string
+    private function getPartBody(TextPart $part): string
     {
-        if (DataPart::class !== $attachment::class && TextPart::class !== (new \ReflectionMethod($attachment, 'getBody'))->getDeclaringClass()->getName()) {
-            return base64_encode($attachment->getBody());
+        if (TextPart::class !== $part::class && DataPart::class !== $part::class && TextPart::class !== (new \ReflectionMethod($part, 'getBody'))->getDeclaringClass()->getName()) {
+            return $part->getBody();
         }
 
         // Symfony's getBody() loses streamed "0"; MIME encoders can change line endings.
         // No public raw-stream getter exists, so keep this upstream workaround isolated.
         static $bodyProperty = null;
         $bodyProperty ??= new \ReflectionProperty(TextPart::class, 'body');
-        $body = $bodyProperty->getValue($attachment);
+        $body = $bodyProperty->getValue($part);
         if (!is_resource($body)) {
-            return base64_encode($attachment->getBody());
+            return $part->getBody();
         }
 
         if (stream_get_meta_data($body)['seekable'] && 0 === fseek($body, 0, SEEK_CUR)) {
@@ -472,10 +487,10 @@ final class DashaMailApiTransport extends AbstractApiTransport
         }
         $body = stream_get_contents($body);
         if (false === $body) {
-            throw new TransportException('Unable to read the attachment body.');
+            throw new TransportException('Unable to read the MIME part body.');
         }
 
-        return base64_encode($body);
+        return $body;
     }
 
     /**
